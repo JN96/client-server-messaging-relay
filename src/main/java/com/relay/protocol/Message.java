@@ -22,7 +22,10 @@ public class Message {
 
     private String reason;
 
-    public Message(MessageType type, String messageId, String senderId, String recipientId, String payload, String status, String reason) {
+    public Message() {}
+
+    public Message(final MessageType type, final String messageId, final String senderId, final String recipientId,
+                   final String payload, final String status, final String reason) {
         this.type = type;
         this.messageId = messageId;
         this.senderId = senderId;
@@ -36,7 +39,7 @@ public class Message {
         return type;
     }
 
-    public void setType(MessageType type) {
+    public void setType(final MessageType type) {
         this.type = type;
     }
 
@@ -44,7 +47,7 @@ public class Message {
         return messageId;
     }
 
-    public void setMessageId(String messageId) {
+    public void setMessageId(final String messageId) {
         this.messageId = messageId;
     }
 
@@ -52,7 +55,7 @@ public class Message {
         return senderId;
     }
 
-    public void setSenderId(String senderId) {
+    public void setSenderId(final String senderId) {
         this.senderId = senderId;
     }
 
@@ -60,7 +63,7 @@ public class Message {
         return recipientId;
     }
 
-    public void setRecipientId(String recipientId) {
+    public void setRecipientId(final String recipientId) {
         this.recipientId = recipientId;
     }
 
@@ -68,7 +71,7 @@ public class Message {
         return payload;
     }
 
-    public void setPayload(String payload) {
+    public void setPayload(final String payload) {
         this.payload = payload;
     }
 
@@ -76,7 +79,7 @@ public class Message {
         return status;
     }
 
-    public void setStatus(String status) {
+    public void setStatus(final String status) {
         this.status = status;
     }
 
@@ -84,7 +87,7 @@ public class Message {
         return reason;
     }
 
-    public void setReason(String reason) {
+    public void setReason(final String reason) {
         this.reason = reason;
     }
 
