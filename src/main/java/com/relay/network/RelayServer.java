@@ -41,20 +41,17 @@ public class RelayServer {
 
         try (ServerSocket serverSocket = new ServerSocket(PORT)) {
             logger.info("RelayServer started on port {}", serverSocket.getLocalPort());
-            System.out.println("RelayServer started on port " + serverSocket.getLocalPort());
 
             while (!Thread.currentThread().isInterrupted()) {
                 // block until a new client connects
                 Socket clientSocket = serverSocket.accept();
                 logger.info("RelayServer accepted connection from {}", clientSocket.getRemoteSocketAddress());
-                System.out.println("RelayServer accepted connection from " + clientSocket.getRemoteSocketAddress());
 
                 // hand off the connection to a dedicated thread so it doesn't block others
                 this.threadPool.submit(new ClientHandler(clientSocket, this.registeredClients));
             }
         } catch (final IOException exception) {
             logger.error("RelayServer start failed on port {}", PORT, exception);
-            System.err.println("RelayServer could not start on port " + PORT);
         }
     }
 
@@ -64,10 +61,8 @@ public class RelayServer {
      */
     private void shutdown() {
         logger.info("RelayServer shutting down...");
-        System.out.println("RelayServer shutting down...");
         this.threadPool.shutdown();
         logger.info("RelayServer finished shutting down.");
-        System.out.println("RelayServer finished shutting down.");
     }
 
     public static void main(final String[] args) {

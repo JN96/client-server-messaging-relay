@@ -52,13 +52,24 @@ public class ClientHandler implements Runnable {
 
                 if (inputLine.length() > MAX_MESSAGE_LENGTH) {
                     logger.info("Message exceeded the size limit of {} and will not be included", MAX_MESSAGE_LENGTH);
-                    System.err.print(String.format("Message exceeded the size limit of %n and will not be included", MAX_MESSAGE_LENGTH));
                     continue;
                 }
 
-                Message message = this.objectMapper.readValue(inputLine, Message.class);
+                Message message;
+                try {
+                    message = this.objectMapper.readValue(inputLine, Message.class);
+                } catch (final JsonProcessingException e) {
+                    logger.warn("Malformed JSON received: {}", inputLine);
+                    sendJson(out, new Message(MessageType.ERROR, null, "SERVER", null, null, "FAILED", "Invalid JSON format"));
+                    continue; // keep the connection loop open
+                }
+
+                if (message == null || message.getType() == null) {
+                    sendJson(out, new Message(MessageType.ERROR, null, "SERVER", null, null, "FAILED", "Missing message type"));
+                    continue;
+                }
+
                 logger.info("Successfully parsed message of type: {}", message.getType());
-                System.out.println(String.format("Successfully parsed message of type: %s", message.getType()));
 
                 switch (message.getType()) {
                     case REGISTER:
@@ -76,7 +87,6 @@ public class ClientHandler implements Runnable {
             }
         } catch (final IOException exception) {
             logger.error("Error occurred while reading from socket: ", exception);
-            System.out.println("Error occurred while reading from socket: " + exception.getMessage());
             throw new RuntimeException(exception);
         } finally {
             try {
@@ -86,13 +96,11 @@ public class ClientHandler implements Runnable {
                     if (session != null) {
                         session.clearConnection();
                         logger.info("Cleared connection for client {}", this.registeredClientId);
-                        System.out.println("Cleared connection for client " + this.registeredClientId);
                     }
                 }
                 this.clientSocket.close(); // closes both input and output streams
             } catch (final IOException exception) {
                 logger.error("Error occurred while closing socket: ", exception);
-                System.out.println("Error occurred while closing socket: " + exception.getMessage());
             }
         }
     }
@@ -125,19 +133,18 @@ public class ClientHandler implements Runnable {
 //                        "Client ID already actively connected"
 //                ));
 //                logger.warn("Client ID {} already actively connected", clientId);
-//                System.out.println(String.format("Client ID %s already actively connected", clientId));
 //                return;
 //            }
 //        }
 
-        // attach the connection
-        session.setConnection(out);
-        this.registeredClientId = clientId;
-
-        logger.info("Successfully registered client with id {}", clientId);
-        System.out.println(String.format("Successfully registered client with id %s", clientId));
-
-        flushOfflineMessages(session, out);
+        // prevent two client registering with the same id at the same time
+        synchronized (session) {
+            // attach the connection
+            session.setConnection(out);
+            this.registeredClientId = clientId;
+            logger.info("Successfully registered client with id {}", clientId);
+            flushOfflineMessages(session, out);
+        }
     }
 
     /**
@@ -147,6 +154,11 @@ public class ClientHandler implements Runnable {
      * @param out the outgoing network stream of the SENDER which is used for ERROR replies.
      */
     private void handleSend(final Message message, final PrintWriter out) {
+        if (this.registeredClientId == null) { // prevent messages sent by unregistered clients
+            sendJson(out, new Message(MessageType.ERROR, message.getMessageId(), "SERVER", null, null, "FAILED", "Must register first"));
+            return;
+        }
+
         String recipientId = message.getRecipientId();
         ClientSession recipientSession = this.registeredClients.get(recipientId);
 
@@ -177,6 +189,11 @@ public class ClientHandler implements Runnable {
      * @param message the ACK message.
      */
     private void handleAck(final Message message) {
+        if (this.registeredClientId == null) {
+            logger.warn("Received ACK from unregistered client socket");
+            return;
+        }
+
         ClientSession session = this.registeredClients.get(message.getSenderId());
         if (session != null) {
             session.acknowledgeMessage(message.getMessageId());
@@ -186,7 +203,6 @@ public class ClientHandler implements Runnable {
     private void handleUnsupported(final Message message) {
         // TODO - do something??
         logger.error("Unsupported message type: {}", message.getType());
-        System.out.println("Unsupported message type: " + message.getType());
     }
 
     /**
@@ -196,8 +212,9 @@ public class ClientHandler implements Runnable {
      * @param out the outgoing network stream for the client.
      */
     private void flushOfflineMessages(final ClientSession session, final PrintWriter out) {
-        session.getUnacknowledgedMessages().values().forEach(unacknowledgedMessage -> sendJson(out, unacknowledgedMessage));
-
+        synchronized (session.getUnacknowledgedMessages()) { // synchronize on the underlying map to prevent ConcurrentModificationException when iterating
+            session.getUnacknowledgedMessages().values().forEach(unacknowledgedMessage -> sendJson(out, unacknowledgedMessage));
+        }
         Message pendingMessage;
 
         // deliver queued messages
@@ -217,7 +234,6 @@ public class ClientHandler implements Runnable {
             out.println(this.objectMapper.writeValueAsString(unacknowledgedMessage));
         } catch (JsonProcessingException exception) {
             logger.info("Error occurred while serilialising message: ", exception);
-            System.out.println("Error occurred while serilialising message: " + exception.getMessage());
             throw new RuntimeException(exception);
         }
     }
