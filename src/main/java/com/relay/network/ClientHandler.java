@@ -45,6 +45,10 @@ public class ClientHandler implements Runnable {
 
             // read JSON from the TCP stream
             while ((inputLine = in.readLine()) != null) {
+                if (inputLine.trim().isEmpty()) { // ignore empty lines / accidental enters with netcat...
+                    continue;
+                }
+
                 if (inputLine.length() > MAX_MESSAGE_LENGTH) {
                     logger.info("Message exceeded the size limit of {} and will not be included", MAX_MESSAGE_LENGTH);
                     System.err.print(String.format("Message exceeded the size limit of %n and will not be included", MAX_MESSAGE_LENGTH));
@@ -91,7 +95,7 @@ public class ClientHandler implements Runnable {
      */
     private void handleRegister(final Message message, final PrintWriter out) {
         String clientId = message.getSenderId();
-        if (clientId == null || clientId.isBlank()) {
+        if (clientId == null || clientId.trim().isEmpty()) {
             return;
         }
 
