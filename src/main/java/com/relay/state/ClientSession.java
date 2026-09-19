@@ -43,7 +43,7 @@ public class ClientSession {
     }
 
     /**
-     * Clears the connection without destroy session data.
+     * Clears the connection without destroying session data.
      */
     public synchronized void clearConnection() {
         this.activeConnection = null;

@@ -28,6 +28,7 @@ public class ClientHandler implements Runnable {
     private final Socket clientSocket;
     private final ConcurrentHashMap<String, ClientSession> registeredClients;
     private final ObjectMapper objectMapper;
+    private String registeredClientId;
 
     public ClientHandler(final Socket clientSocket, final ConcurrentHashMap<String, ClientSession> registeredClients) {
         this.clientSocket = clientSocket;
@@ -79,6 +80,15 @@ public class ClientHandler implements Runnable {
             throw new RuntimeException(exception);
         } finally {
             try {
+                // Clean up session connection on disconnect
+                if (this.registeredClientId != null) {
+                    ClientSession session = this.registeredClients.get(this.registeredClientId);
+                    if (session != null) {
+                        session.clearConnection();
+                        logger.info("Cleared connection for client {}", this.registeredClientId);
+                        System.out.println("Cleared connection for client " + this.registeredClientId);
+                    }
+                }
                 this.clientSocket.close(); // closes both input and output streams
             } catch (final IOException exception) {
                 logger.error("Error occurred while closing socket: ", exception);
@@ -102,8 +112,28 @@ public class ClientHandler implements Runnable {
         // create a persistent session
         ClientSession session = registeredClients.computeIfAbsent(clientId, id -> new ClientSession());
 
+//        // single session only
+//        synchronized (session) {
+//            if (session.isConnected()) {
+//                sendJson(out, new Message(
+//                        MessageType.ERROR,
+//                        message.getMessageId(),
+//                        "SERVER",
+//                        clientId,
+//                        null,
+//                        "FAILED",
+//                        "Client ID already actively connected"
+//                ));
+//                logger.warn("Client ID {} already actively connected", clientId);
+//                System.out.println(String.format("Client ID %s already actively connected", clientId));
+//                return;
+//            }
+//        }
+
         // attach the connection
         session.setConnection(out);
+        this.registeredClientId = clientId;
+
         logger.info("Successfully registered client with id {}", clientId);
         System.out.println(String.format("Successfully registered client with id %s", clientId));
 
