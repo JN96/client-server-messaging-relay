@@ -2,6 +2,7 @@ package com.relay.network;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.relay.config.Constants;
 import com.relay.protocol.Message;
 import com.relay.protocol.MessageType;
 import com.relay.state.ClientSession;
@@ -23,17 +24,14 @@ public class ClientHandler implements Runnable {
 
     private static final Logger logger = LoggerFactory.getLogger(ClientHandler.class);
 
-    private static final int MAX_MESSAGE_LENGTH = 1024;
-
     private final Socket clientSocket;
     private final ConcurrentHashMap<String, ClientSession> registeredClients;
-    private final ObjectMapper objectMapper;
+    private final ObjectMapper objectMapper = new ObjectMapper();
     private String registeredClientId;
 
     public ClientHandler(final Socket clientSocket, final ConcurrentHashMap<String, ClientSession> registeredClients) {
         this.clientSocket = clientSocket;
         this.registeredClients = registeredClients;
-        this.objectMapper = new ObjectMapper();
     }
 
     @Override
@@ -50,8 +48,8 @@ public class ClientHandler implements Runnable {
                     continue;
                 }
 
-                if (inputLine.length() > MAX_MESSAGE_LENGTH) {
-                    logger.info("Message exceeded the size limit of {} and will not be included", MAX_MESSAGE_LENGTH);
+                if (inputLine.length() > Constants.MAX_MESSAGE_LENGTH) {
+                    logger.info("Message exceeded the size limit of {} and will not be included", Constants.MAX_MESSAGE_LENGTH);
                     continue;
                 }
 
@@ -90,7 +88,7 @@ public class ClientHandler implements Runnable {
             throw new RuntimeException(exception);
         } finally {
             try {
-                // Clean up session connection on disconnect
+                // clean up session connection on disconnect
                 if (this.registeredClientId != null) {
                     ClientSession session = this.registeredClients.get(this.registeredClientId);
                     if (session != null) {
@@ -114,6 +112,13 @@ public class ClientHandler implements Runnable {
     private void handleRegister(final Message message, final PrintWriter out) {
         String clientId = message.getSenderId();
         if (clientId == null || clientId.trim().isEmpty()) {
+            return;
+        }
+
+        // check if the server is full before allowing a new registration
+        if (!this.registeredClients.containsKey(clientId) && this.registeredClients.size() >= Constants.MAX_REGISTERED_USERS) {
+            logger.warn("Registration rejected for {}: Maximum user capacity ({}) reached.", clientId, Constants.MAX_REGISTERED_USERS);
+            sendJson(out, new Message(MessageType.ERROR, message.getMessageId(), "SERVER", clientId, null, "FAILED", "Server is at maximum capacity"));
             return;
         }
 
@@ -154,12 +159,13 @@ public class ClientHandler implements Runnable {
      * @param out the outgoing network stream of the SENDER which is used for ERROR replies.
      */
     private void handleSend(final Message message, final PrintWriter out) {
-        if (this.registeredClientId == null) { // prevent messages sent by unregistered clients
+        String recipientId = message.getRecipientId();
+
+        if (this.registeredClientId == null && recipientId.trim().isEmpty()) { // prevent messages sent by unregistered clients or with null ids as ConcurrentHashMap doesn't support null keys
             sendJson(out, new Message(MessageType.ERROR, message.getMessageId(), "SERVER", null, null, "FAILED", "Must register first"));
             return;
         }
 
-        String recipientId = message.getRecipientId();
         ClientSession recipientSession = this.registeredClients.get(recipientId);
 
         if (recipientSession  == null) {
@@ -174,11 +180,14 @@ public class ClientHandler implements Runnable {
             // client is online therefore send it
             recipientSession.markUnacknowledged(messageToDeliver);
             sendJson(recipientOut, messageToDeliver);
+            sendJson(out, new Message(MessageType.RECEIPT, message.getMessageId(), "SERVER", message.getSenderId(), null, "SUCCESS", "Message delivered"));
         } else {
             // client is offline therefore queue it
             boolean queued = recipientSession.queueMessage(messageToDeliver);
             if (!queued) {
-                sendJson(out, new Message(MessageType.ERROR, message.getMessageId(), "SERVER", message.getSenderId(), null, "FAILED", "Recipient mailbox is full "));
+                sendJson(out, new Message(MessageType.ERROR, message.getMessageId(), "SERVER", message.getSenderId(), null, "FAILED", "Recipient mailbox is full"));
+            } else {
+                sendJson(out, new Message(MessageType.RECEIPT, message.getMessageId(), "SERVER", message.getSenderId(), null, "SUCCESS", "Message queued"));
             }
         }
     }
@@ -194,14 +203,20 @@ public class ClientHandler implements Runnable {
             return;
         }
 
-        ClientSession session = this.registeredClients.get(message.getSenderId());
+        // verify messageId exists before attempting to remove it from the map
+        if (message.getMessageId() == null || message.getMessageId().trim().isEmpty()) {
+            logger.warn("Message does not exist.");
+            return;
+        }
+
+        ClientSession session = this.registeredClients.get(this.registeredClientId); // rely on server state for client id to prevent clients posing as others
         if (session != null) {
             session.acknowledgeMessage(message.getMessageId());
         }
     }
 
     private void handleUnsupported(final Message message) {
-        // TODO - do something??
+        // send unsupported message?
         logger.error("Unsupported message type: {}", message.getType());
     }
 

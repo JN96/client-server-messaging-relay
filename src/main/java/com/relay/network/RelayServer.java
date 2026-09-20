@@ -1,5 +1,6 @@
 package com.relay.network;
 
+import com.relay.config.Constants;
 import com.relay.state.ClientSession;
 
 import java.io.IOException;
@@ -19,16 +20,12 @@ public class RelayServer {
 
     private static final Logger logger = LoggerFactory.getLogger(RelayServer.class.getName());
 
-    private static final int PORT = 8080;
-
-    private static final int MAX_CONNECTIONS = 100;
-
     private final ConcurrentHashMap<String, ClientSession> registeredClients;
     private final ExecutorService threadPool;
 
     public RelayServer() {
         this.registeredClients = new ConcurrentHashMap<>();
-        this.threadPool = Executors.newFixedThreadPool(MAX_CONNECTIONS);
+        this.threadPool = Executors.newFixedThreadPool(Constants.MAX_THREADS);
     }
 
     /**
@@ -39,7 +36,7 @@ public class RelayServer {
         Runtime.getRuntime().addShutdownHook(new Thread(this::shutdown));
 
 
-        try (ServerSocket serverSocket = new ServerSocket(PORT)) {
+        try (ServerSocket serverSocket = new ServerSocket(Constants.SERVER_PORT)) {
             logger.info("RelayServer started on port {}", serverSocket.getLocalPort());
 
             while (!Thread.currentThread().isInterrupted()) {
@@ -51,7 +48,7 @@ public class RelayServer {
                 this.threadPool.submit(new ClientHandler(clientSocket, this.registeredClients));
             }
         } catch (final IOException exception) {
-            logger.error("RelayServer start failed on port {}", PORT, exception);
+            logger.error("RelayServer start failed on port {}", Constants.SERVER_PORT, exception);
         }
     }
 
