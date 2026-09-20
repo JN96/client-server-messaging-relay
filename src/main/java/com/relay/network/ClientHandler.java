@@ -185,7 +185,7 @@ public class ClientHandler implements Runnable {
             // client is offline therefore queue it
             boolean queued = recipientSession.queueMessage(messageToDeliver);
             if (!queued) {
-                sendJson(out, new Message(MessageType.ERROR, message.getMessageId(), "SERVER", message.getSenderId(), null, "FAILED", "Recipient mailbox is full "));
+                sendJson(out, new Message(MessageType.ERROR, message.getMessageId(), "SERVER", message.getSenderId(), null, "FAILED", "Recipient mailbox is full"));
             } else {
                 sendJson(out, new Message(MessageType.RECEIPT, message.getMessageId(), "SERVER", message.getSenderId(), null, "SUCCESS", "Message queued"));
             }

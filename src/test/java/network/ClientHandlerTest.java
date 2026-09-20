@@ -121,7 +121,6 @@ class ClientHandlerTest {
 
         String output = runHandlerWithInput(input);
 
-
         assertTrue(output.contains("\"type\":\"ERROR\""), "Handler should return an ERROR payload");
         assertTrue(output.contains("Recipient mailbox is full"), "Error reason should mention the full mailbox");
     }
