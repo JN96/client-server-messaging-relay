@@ -1,5 +1,6 @@
 package com.relay.state;
 
+import com.relay.config.Constants;
 import com.relay.protocol.Message;
 
 import java.io.PrintWriter;
@@ -12,9 +13,6 @@ import java.util.concurrent.ArrayBlockingQueue;
  * Represents the state of a registered client.
  */
 public class ClientSession {
-
-    // number of offline messages retained
-    private static final int MAX_MAILBOX_SIZE = 100;
 
     // tcp output stream, null if disconnected
     private PrintWriter activeConnection;
@@ -30,7 +28,7 @@ public class ClientSession {
     private final Map<String, Message> unacknowledgedMessages;
 
     public ClientSession() {
-        this.pendingQueue = new ArrayBlockingQueue<>(MAX_MAILBOX_SIZE);
+        this.pendingQueue = new ArrayBlockingQueue<>(Constants.MAX_MAILBOX_SIZE);
         this.unacknowledgedMessages = Collections.synchronizedMap(new LinkedHashMap<>());
     }
 

@@ -152,3 +152,11 @@ In Terminal 1 (James), try messaging a user who has never registered:
    ```json
    {"type":"SEND", "messageId":"8", "senderId":"James", "recipientId":"Donal", "payload":"Does Donal exist?"}
    ```
+
+## Automated Testing
+The project includes a suite of automated unit tests built with JUnit 5 and Mockito to verify core state management, mailbox boundaries, and protocol serialization.
+
+To execute the test suite via the command line:
+   ```bash
+   mvn clean test
+   ```
