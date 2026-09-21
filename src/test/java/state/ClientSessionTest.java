@@ -62,7 +62,22 @@ public class ClientSessionTest {
         assertTrue(session.isConnected());
         assertEquals(mockWriter, session.getConnection());
 
-        session.clearConnection();
+        session.clearConnection(mockWriter);
         assertFalse(session.isConnected(), "Connection should evaluate to false after clearConnection is called");
+    }
+
+    @Test
+    @DisplayName("Should not clear a newer connection when a stale/old connection reference is cleared")
+    void testClearConnectionIgnoresStaleReference() {
+        PrintWriter oldWriter = new PrintWriter(new StringWriter());
+        PrintWriter newWriter = new PrintWriter(new StringWriter());
+
+        session.setConnection(oldWriter);
+        session.setConnection(newWriter); // client reconnected before the old handler noticed it dropped
+
+        session.clearConnection(oldWriter); // the old handler's delayed cleanup should be a no-op
+
+        assertTrue(session.isConnected(), "The newer connection must survive a stale clearConnection call");
+        assertEquals(newWriter, session.getConnection());
     }
 }

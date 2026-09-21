@@ -30,10 +30,13 @@ Global state is managed via a `ConcurrentHashMap` linking a unique Client ID to 
 ### Resource Limits & Error Reporting
 * **Mailbox Limits:** Bounded to 100 messages per offline client. If a sender exceeds this, the server explicitly rejects the operation by returning an `ERROR` JSON payload to the sender.
 * **Message Size:** TCP payloads exceeding 1024 bytes are silently dropped and logged by the server to prevent buffer overflow attacks without allocating additional stream resources to reply.
-* **Invalid Input:** Malformed JSON or missing fields result in an `ERROR` response being sent back down the TCP stream without severing the connection.
+* **Invalid Input:** Malformed JSON or missing fields result in an `ERROR` response being sent back down the TCP stream without severing the connection. A `SEND` from a socket that has not yet registered is explicitly rejected with an `ERROR` ("Must register first") rather than silently processed.
+* **Connection Capacity:** Concurrent connections are bounded by a fixed-size thread pool (`MAX_THREADS`) backed by a bounded backlog queue (`MAX_PENDING_CONNECTIONS`). Once both are full, new TCP connections are accepted and then closed immediately rather than left to hang indefinitely waiting for a free handler thread. Total distinct registered identities are separately bounded by `MAX_REGISTERED_USERS`.
+* **Sender Identity:** The `senderId` on a delivered message and on receipts/errors is always the server-verified identity bound to that socket (the id it registered with), never the client-supplied `senderId` field on the `SEND` payload. This prevents one client from impersonating another as the sender of a relayed message.
+* **Unexpected Errors:** Any unforeseen exception while handling a single message is caught, logged, and turned into an `ERROR` reply instead of terminating the connection, so one malformed message cannot silently kill an otherwise healthy session.
 
 ### Reconnection Dynamics
-When a client registers with an existing `clientId`, the server re-binds the session to the new TCP socket connection and immediately flushes any unacknowledged or offline queued messages down the socket.
+When a client registers with an existing `clientId`, the server re-binds the session to the new TCP socket connection and immediately flushes any unacknowledged or offline queued messages down the socket. Disconnect cleanup only clears a session's active connection if it still matches the connection that handler was responsible for (a compare-and-clear), so a delayed cleanup from an old, already-superseded socket cannot clobber a newer connection that reconnected in the meantime.
 
 ## Protocol and Delivery Semantics
 The protocol uses line-delimited JSON over TCP. The server guarantees **at-least-once** delivery.
@@ -51,6 +54,7 @@ The protocol uses line-delimited JSON over TCP. The server guarantees **at-least
 ## Trade-offs and Limitations
 * **Thread per connection:** This is easy to reason about and cleanly manages bounded limits, but it does not scale to tens of thousands of concurrent connections (the C10k problem) compared to non-blocking I/O (Java NIO or Netty).
 * **In-Memory State:** As permitted by the specification, all session state and queues are volatile. A server crash or restart will wipe undelivered messages, which could be mitigated in production by backing queues with an external data store (e.g., Redis or disk-backed persistence).
+* **Shutdown:** On shutdown, the server stops accepting new connections, force-closes every currently tracked client socket (which unblocks each handler thread's blocking read so it exits its loop and cleans up its session), and then waits up to 5 seconds for the thread pool to drain before forcing a shutdown. A client that has gone completely unresponsive at the OS/network level (e.g. a dead peer with no RST/FIN) may still take the OS's own TCP timeout to fully release, but the server process itself is not blocked waiting on it beyond the 5-second grace period.
 
 ## Testing Strategy
 The automated test suite utilizes **JUnit 5** and **Mockito** to validate core system logic.

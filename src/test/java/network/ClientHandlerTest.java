@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.net.Socket;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -26,11 +27,13 @@ import static org.mockito.Mockito.when;
 class ClientHandlerTest {
 
     private ConcurrentHashMap<String, ClientSession> registeredClients;
+    private Set<Socket> activeSockets;
     private ObjectMapper objectMapper;
 
     @BeforeEach
     void setUp() {
         registeredClients = new ConcurrentHashMap<>();
+        activeSockets = ConcurrentHashMap.newKeySet();
         objectMapper = new ObjectMapper();
     }
 
@@ -46,7 +49,7 @@ class ClientHandlerTest {
         when(mockSocket.getInputStream()).thenReturn(inStream);
         when(mockSocket.getOutputStream()).thenReturn(outStream);
 
-        ClientHandler handler = new ClientHandler(mockSocket, registeredClients);
+        ClientHandler handler = new ClientHandler(mockSocket, registeredClients, activeSockets);
         handler.run();
 
         return outStream.toString();
@@ -191,5 +194,53 @@ class ClientHandlerTest {
 
         assertTrue(output.contains("\"type\":\"ERROR\""), "Handler should return an ERROR payload");
         assertTrue(output.contains("Invalid JSON format"), "Error payload should specify invalid format");
+    }
+
+    @Test
+    @DisplayName("Unregistered Protection: Should reject SEND from a socket that never registered")
+    void testUnregisteredSendIsRejected() throws Exception {
+        // Ruth is a legitimate registered (but offline) user
+        registeredClients.put("Ruth", new ClientSession());
+
+        // no REGISTER message is ever sent - this socket never identifies itself
+        Message sendMsg = new Message(MessageType.SEND, "1", "Mallory", "Ruth", "I am pretending to be James", null, null);
+        String output = runHandlerWithInput(objectMapper.writeValueAsString(sendMsg) + "\n");
+
+        ClientSession ruthSession = registeredClients.get("Ruth");
+        assertNull(ruthSession.pollPendingMessage(), "Unregistered sender's message must not be queued for the recipient");
+        assertTrue(output.contains("\"type\":\"ERROR\""), "Handler should return an ERROR payload");
+        assertTrue(output.contains("Must register first"), "Error reason should mention registration is required");
+    }
+
+    @Test
+    @DisplayName("Sender Identity: Delivered message must use the server-verified sender id, not the client-supplied one")
+    void testSendUsesServerVerifiedSenderId() throws Exception {
+        registeredClients.put("Ruth", new ClientSession());
+
+        Message regMsg = new Message(MessageType.REGISTER, "1", "James", null, null, null, null);
+        // James is registered, but the payload falsely claims the sender is "Mallory"
+        Message sendMsg = new Message(MessageType.SEND, "2", "Mallory", "Ruth", "spoof attempt", null, null);
+
+        String input = objectMapper.writeValueAsString(regMsg) + "\n" +
+                objectMapper.writeValueAsString(sendMsg) + "\n";
+        runHandlerWithInput(input);
+
+        Message queuedMsg = registeredClients.get("Ruth").pollPendingMessage();
+        assertNotNull(queuedMsg, "Message should still be queued for Ruth");
+        assertEquals("James", queuedMsg.getSenderId(), "Delivered message must carry the registered socket's real identity");
+    }
+
+    @Test
+    @DisplayName("handleSend: Should return ERROR instead of crashing when recipientId is missing")
+    void testSendMissingRecipientIdReturnsError() throws Exception {
+        Message regMsg = new Message(MessageType.REGISTER, "1", "James", null, null, null, null);
+        Message sendMsg = new Message(MessageType.SEND, "2", "James", null, "no recipient given", null, null);
+
+        String input = objectMapper.writeValueAsString(regMsg) + "\n" +
+                objectMapper.writeValueAsString(sendMsg) + "\n";
+        String output = runHandlerWithInput(input);
+
+        assertTrue(output.contains("\"type\":\"ERROR\""), "Handler should return an ERROR payload instead of crashing");
+        assertTrue(output.contains("Missing recipientId"), "Error reason should mention the missing recipientId");
     }
 }
