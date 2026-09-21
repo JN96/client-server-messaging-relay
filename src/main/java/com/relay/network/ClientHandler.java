@@ -14,6 +14,8 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -26,19 +28,23 @@ public class ClientHandler implements Runnable {
 
     private final Socket clientSocket;
     private final ConcurrentHashMap<String, ClientSession> registeredClients;
+    private final Set<Socket> activeSockets;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private String registeredClientId;
 
-    public ClientHandler(final Socket clientSocket, final ConcurrentHashMap<String, ClientSession> registeredClients) {
+    public ClientHandler(final Socket clientSocket, final ConcurrentHashMap<String, ClientSession> registeredClients,
+                          final Set<Socket> activeSockets) {
         this.clientSocket = clientSocket;
         this.registeredClients = registeredClients;
+        this.activeSockets = activeSockets;
     }
 
     @Override
     public void run() {
+        PrintWriter out = null;
         try {
             BufferedReader in = new BufferedReader(new InputStreamReader(this.clientSocket.getInputStream())); // data stream from the TCP socket
-            PrintWriter out = new PrintWriter(this.clientSocket.getOutputStream(), true); // data stream to send to the client, autoflush=true to remove lingering data from the buffer memory
+            out = new PrintWriter(this.clientSocket.getOutputStream(), true); // data stream to send to the client, autoflush=true to remove lingering data from the buffer memory
 
             String inputLine;
 
@@ -48,8 +54,8 @@ public class ClientHandler implements Runnable {
                     continue;
                 }
 
-                if (inputLine.length() > Constants.MAX_MESSAGE_LENGTH) {
-                    logger.info("Message exceeded the size limit of {} and will not be included", Constants.MAX_MESSAGE_LENGTH);
+                if (inputLine.getBytes(StandardCharsets.UTF_8).length > Constants.MAX_MESSAGE_LENGTH) {
+                    logger.info("Message exceeded the size limit of {} bytes and will not be processed", Constants.MAX_MESSAGE_LENGTH);
                     continue;
                 }
 
@@ -69,36 +75,43 @@ public class ClientHandler implements Runnable {
 
                 logger.info("Successfully parsed message of type: {}", message.getType());
 
-                switch (message.getType()) {
-                    case REGISTER:
-                        handleRegister(message, out);
-                        break;
-                    case SEND:
-                        handleSend(message, out);
-                        break;
-                    case ACK:
-                        handleAck(message);
-                        break;
-                    default:
-                        handleUnsupported(message);
+                try {
+                    switch (message.getType()) {
+                        case REGISTER:
+                            handleRegister(message, out);
+                            break;
+                        case SEND:
+                            handleSend(message, out);
+                            break;
+                        case ACK:
+                            handleAck(message);
+                            break;
+                        default:
+                            handleUnsupported(message);
+                    }
+                } catch (final RuntimeException exception) {
+                    // a single malformed/unexpected message must not take down the whole connection
+                    logger.error("Unexpected error handling message {}: ", message, exception);
+                    sendJson(out, new Message(MessageType.ERROR, message.getMessageId(), "SERVER", null, null, "FAILED", "Internal server error"));
                 }
             }
         } catch (final IOException exception) {
             logger.error("Error occurred while reading from socket: ", exception);
-            throw new RuntimeException(exception);
         } finally {
             try {
                 // clean up session connection on disconnect
                 if (this.registeredClientId != null) {
                     ClientSession session = this.registeredClients.get(this.registeredClientId);
                     if (session != null) {
-                        session.clearConnection();
+                        session.clearConnection(out);
                         logger.info("Cleared connection for client {}", this.registeredClientId);
                     }
                 }
                 this.clientSocket.close(); // closes both input and output streams
             } catch (final IOException exception) {
                 logger.error("Error occurred while closing socket: ", exception);
+            } finally {
+                this.activeSockets.remove(this.clientSocket);
             }
         }
     }
@@ -125,24 +138,7 @@ public class ClientHandler implements Runnable {
         // create a persistent session
         ClientSession session = registeredClients.computeIfAbsent(clientId, id -> new ClientSession());
 
-//        // single session only
-//        synchronized (session) {
-//            if (session.isConnected()) {
-//                sendJson(out, new Message(
-//                        MessageType.ERROR,
-//                        message.getMessageId(),
-//                        "SERVER",
-//                        clientId,
-//                        null,
-//                        "FAILED",
-//                        "Client ID already actively connected"
-//                ));
-//                logger.warn("Client ID {} already actively connected", clientId);
-//                return;
-//            }
-//        }
-
-        // prevent two client registering with the same id at the same time
+        // prevent two clients registering with the same id at the same time
         synchronized (session) {
             // attach the connection
             session.setConnection(out);
@@ -154,40 +150,46 @@ public class ClientHandler implements Runnable {
 
     /**
      * Handles a SEND message by looking up the recipient and attempts to deliver the message (online) or queues it (offline).
-     * Replies with ERROR if the recipient does not exist or if the recipient's mailbox is full.
+     * Replies with ERROR if the sender is not registered, the recipient is missing/unknown, or the recipient's mailbox is full.
+     * The sender identity on the delivered message is always the server-verified {@code registeredClientId} for this socket,
+     * never the client-supplied {@code senderId}, so a client cannot impersonate another registered user.
      * @param message the SEND message containing the payload.
-     * @param out the outgoing network stream of the SENDER which is used for ERROR replies.
+     * @param out the outgoing network stream of the SENDER which is used for ERROR/RECEIPT replies.
      */
     private void handleSend(final Message message, final PrintWriter out) {
-        String recipientId = message.getRecipientId();
-
-        if (this.registeredClientId == null && recipientId.trim().isEmpty()) { // prevent messages sent by unregistered clients or with null ids as ConcurrentHashMap doesn't support null keys
+        if (this.registeredClientId == null) {
             sendJson(out, new Message(MessageType.ERROR, message.getMessageId(), "SERVER", null, null, "FAILED", "Must register first"));
+            return;
+        }
+
+        String recipientId = message.getRecipientId();
+        if (recipientId == null || recipientId.trim().isEmpty()) {
+            sendJson(out, new Message(MessageType.ERROR, message.getMessageId(), "SERVER", this.registeredClientId, null, "FAILED", "Missing recipientId"));
             return;
         }
 
         ClientSession recipientSession = this.registeredClients.get(recipientId);
 
-        if (recipientSession  == null) {
-            sendJson(out, new Message(MessageType.ERROR, message.getMessageId(), "SERVER", message.getSenderId(), null, "FAILED", "Unknown recipient"));
+        if (recipientSession == null) {
+            sendJson(out, new Message(MessageType.ERROR, message.getMessageId(), "SERVER", this.registeredClientId, null, "FAILED", "Unknown recipient"));
             return;
         }
 
-        Message messageToDeliver = new Message(MessageType.DELIVERED, message.getMessageId(), message.getSenderId(), recipientId, message.getPayload(), null, null);
+        Message messageToDeliver = new Message(MessageType.DELIVERED, message.getMessageId(), this.registeredClientId, recipientId, message.getPayload(), null, null);
 
         PrintWriter recipientOut = recipientSession.getConnection();
         if (recipientSession.isConnected()) {
             // client is online therefore send it
             recipientSession.markUnacknowledged(messageToDeliver);
             sendJson(recipientOut, messageToDeliver);
-            sendJson(out, new Message(MessageType.RECEIPT, message.getMessageId(), "SERVER", message.getSenderId(), null, "SUCCESS", "Message delivered"));
+            sendJson(out, new Message(MessageType.RECEIPT, message.getMessageId(), "SERVER", this.registeredClientId, null, "SUCCESS", "Message delivered"));
         } else {
             // client is offline therefore queue it
             boolean queued = recipientSession.queueMessage(messageToDeliver);
             if (!queued) {
-                sendJson(out, new Message(MessageType.ERROR, message.getMessageId(), "SERVER", message.getSenderId(), null, "FAILED", "Recipient mailbox is full"));
+                sendJson(out, new Message(MessageType.ERROR, message.getMessageId(), "SERVER", this.registeredClientId, null, "FAILED", "Recipient mailbox is full"));
             } else {
-                sendJson(out, new Message(MessageType.RECEIPT, message.getMessageId(), "SERVER", message.getSenderId(), null, "SUCCESS", "Message queued"));
+                sendJson(out, new Message(MessageType.RECEIPT, message.getMessageId(), "SERVER", this.registeredClientId, null, "SUCCESS", "Message queued"));
             }
         }
     }
@@ -247,7 +249,7 @@ public class ClientHandler implements Runnable {
     private void sendJson(final PrintWriter out, final Message unacknowledgedMessage) {
         try {
             out.println(this.objectMapper.writeValueAsString(unacknowledgedMessage));
-        } catch (JsonProcessingException exception) {
+        } catch (final JsonProcessingException exception) {
             logger.info("Error occurred while serilialising message: ", exception);
             throw new RuntimeException(exception);
         }

@@ -1,61 +1,56 @@
 ## Acceptance Criteria
-* Clients can connect, register, and seamlessly reconnect to the same logical session using TCP.
-* Real-time online messages are delivered immediately and confirmed to the sender.
-* Offline messages are queued safely in memory (up to 100 messages) and flushed upon reconnection.
-* The server guarantees at-least-once delivery, retaining in-flight messages until an explicit `ACK` is received.
-* Invalid input, full mailboxes, and unregistered socket commands are handled gracefully without crashing the server.
+* Users can connect, register, and reconnect to their existing sessions over standard TCP.
+* Online messages are delivered instantly, and the sender gets a confirmation receipt.
+* Offline messages are safely stored in memory (up to 100 per person) and pushed out as soon as the user reconnects.
+* Messages won't get lost in transit (at-least-once delivery) by holding onto them until the receiver explicitly replies with an `ACK`.
+* The server handles bad data, full mailboxes, and out-of-order commands gracefully without crashing or dropping the connection.
 
 ## AI Tool Usage
-During both the initial design phase and final deployment setup, an LLM was used as a collaborative technical assistant to evaluate architectural trade-offs, refine configuration files, and troubleshoot containerization issues.
-
-* **Prompting & Design:**
-  * Evaluated transport layer options (raw TCP vs. WebSockets) and concurrency models suitable for a two-hour implementation without introducing heavy frameworks.
-  * Brainstormed a two-stage mailbox data model (`ArrayBlockingQueue` for pending offline messages and a synchronized `LinkedHashMap` for in-flight messages) to satisfy bounded resource limits, at-least-once delivery semantics, and FIFO message ordering.
-* **Packaging & Dependency Optimization:**
-  * Identified the cause of `NoClassDefFoundError` (missing SLF4J/Jackson classes at runtime) and configured `maven-shade-plugin` to generate a self-contained JAR.
-  * Streamlined `pom.xml` by removing redundant transitive dependencies (`jackson-annotations`) and unnecessary build plugins (`docker-maven-plugin`) to keep the build process clean and minimal.
-* **Containerization & Troubleshooting:**
-  * Diagnosed Docker CLI execution issues with `exec-maven-plugin` and resolved container startup/port binding failures.
-* **Verification:**
-  * All AI suggestions were verified against exercise constraints, ensuring thread safety, minimal container footprint (~150MB), and deterministic message ordering. All final source code, unit tests, and manual Netcat verification steps were executed and validated locally.
+I used an LLM (Primarily Gemini, with some Claude Code) as a technical sounding board while building this project.
+* **Design:** the pros and cons of raw TCP versus WebSockets were discussed; I chose TCP as it was lightweight, didn't require external libraries and I could handle the message framing. The AI also helped design the two-stage mailbox (a queue for offline messages and an ordered map for in-flight messages) to smoothly handle FIFO ordering and unacknowledged messages.
+* **Build & Docker:** Gemini helped me fix a missing dependency error by setting up the `maven-shade-plugin` to build a single, run-anywhere JAR file. It also was able to assisting with troubleshooting some Docker port-binding issues encountered when trying to download images.
+* **Testing:** Every suggestion was manually verified against the exercise constraints, ensuring thread safety and a minimal Docker footprint. The AI tools were a big help especially in identifying edge cases scenarios and proposing fixes. 
 
 ## Architecture and Concurrency Model
-The relay is built using raw Java TCP sockets to maintain full control over framing and state. The concurrency model relies on a thread per connection architecture managed by a fixed-size `ExecutorService`. This isolates clients; if one client hangs or experiences a severe I/O disruption, it only drops its own thread and does not block unrelated clients. Application-level errors (such as malformed JSON payloads) are intercepted gracefully without dropping the TCP connection.
+The server is built on standard Java TCP sockets. To keep things simple and robust, every active connection gets its own dedicated thread from a fixed-size thread pool. If one user's connection lags or drops, it only affects their specific thread while everyone else on the server keeps chatting happily.
 
-Global state is managed via a `ConcurrentHashMap` linking a unique Client ID to a `ClientSession`. Each session holds:
-* An active socket reference (nullable if disconnected).
-* A bounded `ArrayBlockingQueue` for pending offline messages.
-* A synchronized `LinkedHashMap` for in-flight (unacknowledged) messages.
+The user state is stored in a central `ConcurrentHashMap` that links a user's ID to their `ClientSession`. Each session holds their current socket connection, a bounded queue for offline messages, and a map of messages that are currently in-flight.
+
+### Concurrency Tool Justifications
+Because multiple threads are reading and writing to the server's memory at the exact same time, specific tools were used to prevent data corruption:
+* **Threads & Blocking I/O:** Reading from a network socket pauses (blocks) the thread until data arrives. We use a thread pool so one quiet user doesn't freeze the whole server.
+* **ConcurrentHashMap:** This holds our main user directory. It allows multiple users to register at the exact same millisecond without the server crashing or overwriting data.
+* **ArrayBlockingQueue:** Used for the offline mailbox. It naturally handles multiple threads trying to deliver messages at once and mathematically guarantees that the 100 message limit is never exceeded.
+* **Synchronized LinkedHashMap:** Used for in-flight messages. The `LinkedHashMap` remembers the exact chronological order (FIFO) of messages. Using a synchronized block keeps it safe if the server adds a new message at the exact moment the user acknowledges an old one.
+* **Synchronized Blocks:** The `synchronized` keyword is used to lock. It prevents two connections from trying to claim the same user ID at the exact same time, which would corrupt the connection state.
 
 ### Resource Limits & Error Reporting
-* **Mailbox Limits:** Bounded to 100 messages per offline client. If a sender exceeds this, the server explicitly rejects the operation by returning an `ERROR` JSON payload to the sender.
-* **Message Size:** TCP payloads exceeding 1024 bytes are silently dropped and logged by the server to prevent buffer overflow attacks without allocating additional stream resources to reply.
-* **Invalid Input:** Malformed JSON or missing fields result in an `ERROR` response being sent back down the TCP stream without severing the connection.
+* **Connection Limits:** The server allows up to 100 registered users at once and caps active threads at 50. If the server gets completely overwhelmed, it politely rejects new connections rather than hanging indefinitely.
+* **Mailbox Limits:** Offline users can queue up to 100 messages. If someone tries to send them a 101st message, the server catches it and replies with an `ERROR` letting the sender know the recipient's mailbox is full.
+* **Message Size:** Message sizes over 1024 bytes and log the incident. This saves memory without punishing the user by killing their connection.
+* **Invalid Input:** If a user sends broken JSON, forgets a required field, or tries to send a message before registering, the server responds with a clear `ERROR` payload but keeps the socket open so they can try again.
+* **Sender Verification:** You cannot impersonate someone else. The server always stamps outgoing messages with the actual verified ID the sender registered with, ignoring whatever `senderId` the client tried to put in the payload.
 
 ### Reconnection Dynamics
-When a client registers with an existing `clientId`, the server re-binds the session to the new TCP socket connection and immediately flushes any unacknowledged or offline queued messages down the socket.
+When a user reconnects, the server takes their new socket, attaches it to their existing session, and immediately pushes any missed offline messages down the pipe. I also added a quick safety check to ensure that a lagging disconnect from an old connection won't accidentally wipe out a brand-new connection for the same user.
 
 ## Protocol and Delivery Semantics
-The protocol uses line-delimited JSON over TCP. The server guarantees **at-least-once** delivery.
+The protocol relies on line-delimited JSON.
 
-* **Delivery and Acknowledgement (FIFO):** To satisfy the FIFO bonus requirement, the system uses a two-stage mailbox. When a message is transmitted down the TCP stream, it moves from the bounded pending queue to a synchronized `LinkedHashMap`. It is only deleted when an explicit `ACK` command is received from the recipient. If a socket drops, the unacknowledged messages remain in the ordered map and are immediately flushed down the new socket upon re-registration, preserving their original chronological sequence.
-* **Sender Confirmation:** When a client issues a `SEND` command, the server explicitly responds to the sender with a `RECEIPT` payload confirming if the message was immediately delivered to an online recipient or safely queued for an offline recipient.
-* **Duplicate Sends:** The server treats every incoming `SEND` command as a unique operation. If a client transmits the exact same payload multiple times, the server will queue and deliver them as distinct messages. Deduplication is delegated to the client application.
-* **Stale Acknowledgements:** If the server receives an `ACK` for a `messageId` that does not exist in the unacknowledged map (e.g., because it was already acknowledged or the ID was invalid), the server silently ignores it to gracefully handle network delays and duplicate client ACKs.
+* **FIFO Delivery:** A two-stage system. Messages move from the pending queue to an "in-flight" map when they are sent down the TCP stream. They only get deleted when the receiver actually replies with an `ACK`. If the connection drops before the `ACK` arrives, those messages stay in exact order and are resent the next time the user connects.
+* **Receipts:** When you send a message, the server explicitly replies with a `RECEIPT` telling you if it was delivered instantly or queued for later.
+* **Duplicates & Stale ACKs:**  Deduplication of messages does not happen on the server; if a user sends the exact same message twice, it is queued it twice. If the server receives an `ACK` for a message it doesn't recognize (like a delayed duplicate `ACK`), it just silently ignores it to prevent unnecessary errors.
 
-## Packaging and Deployment Architecture
-* **JAR Strategy:** Used `maven-shade-plugin` to bundle external libraries (Jackson, SLF4J/Log4j) into a single self-contained executable artifact. This eliminates runtime classpath configuration requirements in deployment environments.
-* **Minimal Runtime Containerization:** Adopted a separation of concerns pattern where compilation occurs on the host system via Maven, while the container image (`eclipse-temurin:8-jre-alpine`) provides a slim, JRE-only execution environment. This minimizes container footprint (~150MB) and avoids unnecessary build utility overhead or in-container dependency downloads during image assembly.
-* **Automated Deployment Profile:** Integrated a Maven profile (`-Pdocker`) using `exec-maven-plugin` to automate container stopping, Docker image building, and container execution during the `verify` lifecycle phase.
+## Packaging and Deployment
+* **JAR:** A JAR is built using Maven, meaning all external libraries (like Jackson for JSON parsing) are compiled into the file.
+* **Docker:** A lightweight Docker image (`eclipse-temurin:8-jre-alpine`) with a JRE is used to keep the container relatively small (around 150MB) and fast to boot.
 
 ## Trade-offs and Limitations
-* **Thread per connection:** This is easy to reason about and cleanly manages bounded limits, but it does not scale to tens of thousands of concurrent connections (the C10k problem) compared to non-blocking I/O (Java NIO or Netty).
-* **In-Memory State:** As permitted by the specification, all session state and queues are volatile. A server crash or restart will wipe undelivered messages, which could be mitigated in production by backing queues with an external data store (e.g., Redis or disk-backed persistence).
+* **Thread-per-connection:** Assigning a thread to every user is fine for this kind of application implementation, but it will not scale to tens of thousands of concurrent users. For a massive production app, the use of a non non-blocking I/O (like Netty) may be better suited.
+* **In-Memory Storage:** If the server restarts, all pending messages and registered sessions are lost. In a real environment, ideally state should be saved to a database such as Redis.
 
 ## Testing Strategy
-The automated test suite utilizes **JUnit 5** and **Mockito** to validate core system logic.
+We wrote the automated tests using JUnit 5 and Mockito.
 
-* **State and Boundary Constraints:** Unit tests verify the `ClientSession` data structures directly, ensuring the offline mailbox strictly enforces its 100-message capacity limit and that the unacknowledged map preserves exact FIFO insertion order during redelivery cycles.
-* **Protocol Serialization:** Dedicated tests validate that the Jackson `ObjectMapper` accurately parses the specific `MessageType` enums, completely ignores null properties to save bandwidth via `@JsonInclude(NON_NULL)`, and gracefully handles malformed JSON payloads without terminating the thread.
-* **Isolated Handler Logic:** Instead of executing full end-to-end integration tests, Mockito is used to mock the TCP `Socket`, `InputStream`, and `OutputStream` instances. This allows the test suite to inject simulated string-based JSON streams directly into the `ClientHandler` loop. This approach rapidly verifies complex state transitions, such as rejecting operations from unregistered sockets, queueing messages for offline users, and clearing acknowledged messages by capturing and asserting against the handler's raw `PrintWriter` output.
-* **Test Boundaries:** The tests intentionally isolate the core routing logic, state boundaries, and serialization mechanisms. They **do not cover** raw socket network integration (e.g., spinning up a real `ServerSocket` and connecting via `java.net.Socket` in the test phase) or heavy concurrency load testing. These boundaries were chosen to keep the test suite fast, deterministic, and free of the port-binding conflicts that often make CI environments flaky, fulfilling the exercise constraints within the suggested time box.
+* **Isolated Handlers:** Instead of writing slower integration tests, I mocked the TCP streams instead for unit tests. This allowed us to easily test things like max capacity rejections, full mailboxes, and bad JSON by just feeding strings directly into the handler and checking what it printed out.
+* **Serialization and State:** Dedicated tests were added to ensure the JSON mapper correctly ignored null fields (to save bandwidth) and that the queue limits and FIFO ordering functioned exactly as expected.

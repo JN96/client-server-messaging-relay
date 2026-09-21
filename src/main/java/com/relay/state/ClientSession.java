@@ -17,7 +17,7 @@ public class ClientSession {
     // tcp output stream, null if disconnected
     private PrintWriter activeConnection;
 
-    // bounded (100) queue for message waiting to be sent
+    // bounded queue for message waiting to be sent
     private final ArrayBlockingQueue<Message> pendingQueue;
 
 
@@ -41,17 +41,22 @@ public class ClientSession {
     }
 
     /**
-     * Clears the connection without destroying session data.
+     * Clears the connection without destroying session data, but only if {@code output} is still
+     * the currently attached connection. Prevents a stale/disconnecting socket from corrupting a
+     * newer connection that has already re-registered on the same client id.
+     * @param output - the output stream the caller believes it owns.
      */
-    public synchronized void clearConnection() {
-        this.activeConnection = null;
+    public synchronized void clearConnection(final PrintWriter output) {
+        if (this.activeConnection == output) {
+            this.activeConnection = null;
+        }
     }
 
     public synchronized PrintWriter getConnection() {
         return this.activeConnection;
     }
 
-    public boolean isConnected() {
+    public synchronized boolean isConnected() {
         return this.activeConnection != null;
     }
 

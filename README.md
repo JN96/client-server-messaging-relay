@@ -142,7 +142,7 @@ the client must acknowledge receipt.
 2. Use `Ctrl+C` to kill Ruth's terminal.
 3. Run nc localhost 8080, and register her again.
    ```json
-   {"type":"REGISTER", "messageId":"7", "senderId":"Ruth"}
+   {"type":"REGISTER", "messageId":"5", "senderId":"Ruth"}
    ```
 Expected Result: Ruth receives no messages upon reconnecting. The server has permanently cleared them from her mailbox.
 
@@ -160,3 +160,5 @@ To execute the test suite via the command line:
    ```bash
    mvn clean test
    ```
+Once the tests finish, open the newly generated file `target/site/jacoco/index.html` in your browser
+to see a breakdown of the test coverage.
