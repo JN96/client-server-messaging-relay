@@ -33,8 +33,6 @@ public class RelayServer {
     public RelayServer() {
         this.registeredClients = new ConcurrentHashMap<>();
         this.activeSockets = ConcurrentHashMap.newKeySet();
-        // bounded queue + default AbortPolicy: once MAX_THREADS are busy and the backlog is full,
-        // further accept()-ed sockets are rejected immediately instead of hanging forever unserved
         this.threadPool = new ThreadPoolExecutor(
                 Constants.MAX_THREADS,
                 Constants.MAX_THREADS,
@@ -107,6 +105,10 @@ public class RelayServer {
         logger.info("RelayServer finished shutting down.");
     }
 
+    /**
+     * Safely closes a resource while logging any caught exceptions.
+     * @param closeable the resource to close.
+     */
     private static void closeQuietly(final AutoCloseable closeable) {
         try {
             closeable.close();

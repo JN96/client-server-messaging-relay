@@ -138,7 +138,7 @@ public class ClientHandler implements Runnable {
         // create a persistent session
         ClientSession session = registeredClients.computeIfAbsent(clientId, id -> new ClientSession());
 
-        // prevent two client registering with the same id at the same time
+        // prevent two clients registering with the same id at the same time
         synchronized (session) {
             // attach the connection
             session.setConnection(out);

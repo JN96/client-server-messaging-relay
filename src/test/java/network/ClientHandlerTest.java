@@ -41,7 +41,7 @@ class ClientHandlerTest {
      * Helper method to simulate a client connection with specific string input.
      * Returns the server's raw string output.
      */
-    private String runHandlerWithInput(String input) throws Exception {
+    private String runHandlerWithInput(final String input) throws Exception {
         Socket mockSocket = mock(Socket.class);
         ByteArrayInputStream inStream = new ByteArrayInputStream(input.getBytes());
         ByteArrayOutputStream outStream = new ByteArrayOutputStream();
@@ -203,7 +203,7 @@ class ClientHandlerTest {
         registeredClients.put("Ruth", new ClientSession());
 
         // no REGISTER message is ever sent - this socket never identifies itself
-        Message sendMsg = new Message(MessageType.SEND, "1", "Mallory", "Ruth", "I am pretending to be James", null, null);
+        Message sendMsg = new Message(MessageType.SEND, "1", "Donal", "Ruth", "I am pretending to be James", null, null);
         String output = runHandlerWithInput(objectMapper.writeValueAsString(sendMsg) + "\n");
 
         ClientSession ruthSession = registeredClients.get("Ruth");
@@ -218,8 +218,8 @@ class ClientHandlerTest {
         registeredClients.put("Ruth", new ClientSession());
 
         Message regMsg = new Message(MessageType.REGISTER, "1", "James", null, null, null, null);
-        // James is registered, but the payload falsely claims the sender is "Mallory"
-        Message sendMsg = new Message(MessageType.SEND, "2", "Mallory", "Ruth", "spoof attempt", null, null);
+        // James is registered, but the payload falsely claims the sender is "Donal"
+        Message sendMsg = new Message(MessageType.SEND, "2", "Donal", "Ruth", "spoof attempt", null, null);
 
         String input = objectMapper.writeValueAsString(regMsg) + "\n" +
                 objectMapper.writeValueAsString(sendMsg) + "\n";
