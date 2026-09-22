@@ -7,9 +7,9 @@
 
 ## AI-tool usage
 I used an LLM (Primarily Gemini, with some Claude Code) as a technical sounding board while building this project.
-* **Design:** the pros and cons of raw TCP versus WebSockets were discussed; I chose TCP as it was lightweight, didn't require external libraries and I could handle the message framing. The AI also helped design the two-stage mailbox (a queue for offline messages and an ordered map for in-flight messages) to smoothly handle FIFO ordering and unacknowledged messages.
-* **Build & Docker:** Gemini helped me fix a missing dependency error by setting up the `maven-shade-plugin` to build a single, run-anywhere JAR file. It also was able to assisting with troubleshooting some Docker port-binding issues encountered when trying to download images.
-* **Testing:** Every suggestion was manually verified against the exercise constraints, ensuring thread safety and a minimal Docker footprint. The AI tools were a big help especially in identifying edge cases scenarios and proposing fixes.
+* **Design:** the pros and cons of raw TCP versus WebSockets were discussed; I chose TCP as it was lightweight, didn't require external libraries and I could handle the message framing. The AI also helped design the two-stage mailbox (a queue for offline messages and an ordered map for in-flight messages) to handle FIFO ordering and unacknowledged messages.
+* **Build & Docker:** Gemini helped identifiy a suitable relatively low footprint Docker images with Java 8 and assisted in fixing a missing dependency error by setting up the `maven-shade-plugin` to build a JAR file which has all required dependencies bundled in. It also was able to assist with troubleshooting some Docker port-binding issues encountered when trying to download images.
+* **Testing:** Every suggestion was manually verified against the exercise constraints, ensuring thread safety and a minimal Docker footprint. The AI tools, Claude Code especially were a big help especially in identifying edge cases scenarios and proposing fixes.
 
 ## Architecture, protocol, state, and concurrency models
 The server is built on standard Java TCP sockets. To keep things simple and robust, every active connection gets its own dedicated thread from a fixed-size thread pool. If one user's connection lags or drops, it only affects their specific thread while everyone else on the server keeps chatting happily.
@@ -24,7 +24,7 @@ Because multiple threads are reading and writing to the server's memory at the e
 * **ConcurrentHashMap:** This holds our main user directory. It allows multiple users to register at the exact same millisecond without the server crashing or overwriting data.
 * **ArrayBlockingQueue:** Used for the offline mailbox. It naturally handles multiple threads trying to deliver messages at once and mathematically guarantees that the 100 message limit is never exceeded.
 * **Synchronized LinkedHashMap:** Used for in-flight messages. The `LinkedHashMap` remembers the exact chronological order (FIFO) of messages. Using a synchronized block keeps it safe if the server adds a new message at the exact moment the user acknowledges an old one.
-* **Synchronized Blocks:** The `synchronized` keyword is used to lock. It prevents two connections from trying to claim the same user ID at the exact same time, which would corrupt the connection state.
+* **Synchronized Blocks:** The `synchronized` keyword is used to lock objects when trying to access them. For example, it can prevent two connections from trying to claim the same user ID at the exact same time, which would corrupt the connection state.
 
 ### Resource Limits & Error Reporting
 * **Connection Limits:** The server allows up to 100 registered users at once and caps active threads at 50. If the server gets completely overwhelmed, it politely rejects new connections rather than hanging indefinitely.
