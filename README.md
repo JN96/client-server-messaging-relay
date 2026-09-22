@@ -23,6 +23,7 @@ This system was designed with thread safety, scalability, and memory efficiency 
 
 * Java 8 or higher
 * Maven 3.6+
+* Netcat (for manual testing)
 
 ---
 ## Building and Running
