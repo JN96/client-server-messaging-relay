@@ -45,6 +45,8 @@ If you prefer the terminal, you must compile the project first using Maven.
    ```
    mvn exec:java -Dexec.mainClass="com.relay.network.RelayServer"
    ```
+   
+Add the flag `-DskipTests` to the `package` command to skip tests during the build. 
 
 ### Option 3: Running with Docker
 You can run the server inside a lightweight Java 8 Alpine Linux container.
